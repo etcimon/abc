@@ -20,6 +20,13 @@
 
 #include "gia.h"
 #include "misc/util/utilTruth.h"
+#include <string.h>
+
+#if defined(__x86_64__)
+#include <cpuid.h>
+#include <immintrin.h>
+#define GIA_SIM_AVX2 1
+#endif
 
 ABC_NAMESPACE_IMPL_START
 
@@ -27,6 +34,89 @@ ABC_NAMESPACE_IMPL_START
 ////////////////////////////////////////////////////////////////////////
 ///                        DECLARATIONS                              ///
 ////////////////////////////////////////////////////////////////////////
+
+#if defined(__GNUC__)
+__attribute__((target("xsave")))
+#endif
+static int Gia_SimHasAvx2(void)
+{
+    static int mode = -1;
+    if ( mode >= 0 )
+        return mode;
+    mode = 0;
+#if defined(GIA_SIM_AVX2)
+    {
+        unsigned int eax, ebx, ecx, edx;
+        if ( __get_cpuid(1, &eax, &ebx, &ecx, &edx)
+             && (ecx & bit_OSXSAVE) && (ecx & bit_AVX) )
+        {
+            unsigned int xcr = (unsigned int)_xgetbv(0);
+            if ( (xcr & 6U) == 6U
+                 && __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)
+                 && (ebx & bit_AVX2) )
+                mode = 1;
+        }
+    }
+#endif
+    return mode;
+}
+
+#if defined(GIA_SIM_AVX2)
+__attribute__((target("avx2")))
+static void Gia_SimWords( unsigned * dst, const unsigned * a, const unsigned * b, int n, int op )
+{
+    int i = 0;
+    if ( Gia_SimHasAvx2() && n >= 8 )
+    {
+        for ( ; i + 8 <= n; i += 8 )
+        {
+            __m256i va = _mm256_loadu_si256( (const __m256i *)(a + i) );
+            __m256i vb = b ? _mm256_loadu_si256( (const __m256i *)(b + i) ) : _mm256_setzero_si256();
+            __m256i r;
+            if ( op == 0 )
+                r = va;
+            else if ( op == 1 )
+                r = _mm256_andnot_si256( va, _mm256_set1_epi32( -1 ) );
+            else if ( op == 2 )
+                r = _mm256_and_si256( va, vb );
+            else if ( op == 3 )
+                r = _mm256_andnot_si256( va, vb );
+            else if ( op == 4 )
+                r = _mm256_andnot_si256( vb, va );
+            else
+                r = _mm256_andnot_si256( _mm256_or_si256( va, vb ), _mm256_set1_epi32( -1 ) );
+            _mm256_storeu_si256( (__m256i *)(dst + i), r );
+        }
+    }
+    for ( ; i < n; i++ )
+    {
+        unsigned aw = a[i];
+        unsigned bw = b ? b[i] : 0;
+        if ( op == 0 ) dst[i] = aw;
+        else if ( op == 1 ) dst[i] = ~aw;
+        else if ( op == 2 ) dst[i] = aw & bw;
+        else if ( op == 3 ) dst[i] = ~aw & bw;
+        else if ( op == 4 ) dst[i] = aw & ~bw;
+        else dst[i] = ~(aw | bw);
+    }
+}
+#else
+static void Gia_SimWords( unsigned * dst, const unsigned * a, const unsigned * b, int n, int op )
+{
+    int i;
+    for ( i = 0; i < n; i++ )
+    {
+        unsigned aw = a[i];
+        unsigned bw = b ? b[i] : 0;
+        if ( op == 0 ) dst[i] = aw;
+        else if ( op == 1 ) dst[i] = ~aw;
+        else if ( op == 2 ) dst[i] = aw & bw;
+        else if ( op == 3 ) dst[i] = ~aw & bw;
+        else if ( op == 4 ) dst[i] = aw & ~bw;
+        else dst[i] = ~(aw | bw);
+    }
+}
+#endif
 
 static inline unsigned * Gia_SimData( Gia_ManSim_t * p, int i )    { return p->pDataSim + i * p->nWords;    }
 static inline unsigned * Gia_SimDataCi( Gia_ManSim_t * p, int i )  { return p->pDataSimCis + i * p->nWords; }
@@ -274,9 +364,7 @@ static inline void Gia_ManSimInfoRandom( Gia_ManSim_t * p, unsigned * pInfo )
 ***********************************************************************/
 static inline void Gia_ManSimInfoZero( Gia_ManSim_t * p, unsigned * pInfo )
 {
-    int w;
-    for ( w = p->nWords-1; w >= 0; w-- )
-        pInfo[w] = 0;
+    memset( pInfo, 0, (size_t)p->nWords * sizeof(unsigned) );
 }
 
 /**Function*************************************************************
@@ -312,9 +400,7 @@ static inline int Gia_ManSimInfoIsZero( Gia_ManSim_t * p, unsigned * pInfo )
 ***********************************************************************/
 static inline void Gia_ManSimInfoOne( Gia_ManSim_t * p, unsigned * pInfo )
 {
-    int w;
-    for ( w = p->nWords-1; w >= 0; w-- )
-        pInfo[w] = ~0;
+    memset( pInfo, 0xFF, (size_t)p->nWords * sizeof(unsigned) );
 }
 
 /**Function*************************************************************
@@ -330,9 +416,7 @@ static inline void Gia_ManSimInfoOne( Gia_ManSim_t * p, unsigned * pInfo )
 ***********************************************************************/
 static inline void Gia_ManSimInfoCopy( Gia_ManSim_t * p, unsigned * pInfo, unsigned * pInfo0 )
 {
-    int w;
-    for ( w = p->nWords-1; w >= 0; w-- )
-        pInfo[w] = pInfo0[w];
+    Gia_SimWords( pInfo, pInfo0, NULL, p->nWords, 0 );
 }
 
 /**Function*************************************************************
@@ -350,9 +434,7 @@ static inline void Gia_ManSimulateCi( Gia_ManSim_t * p, Gia_Obj_t * pObj, int iC
 {
     unsigned * pInfo  = Gia_SimData( p, Gia_ObjValue(pObj) );
     unsigned * pInfo0 = Gia_SimDataCi( p, iCi );
-    int w;
-    for ( w = p->nWords-1; w >= 0; w-- )
-        pInfo[w] = pInfo0[w];
+    Gia_SimWords( pInfo, pInfo0, NULL, p->nWords, 0 );
 }
 
 /**Function*************************************************************
@@ -370,13 +452,7 @@ static inline void Gia_ManSimulateCo( Gia_ManSim_t * p, int iCo, Gia_Obj_t * pOb
 {
     unsigned * pInfo  = Gia_SimDataCo( p, iCo );
     unsigned * pInfo0 = Gia_SimData( p, Gia_ObjDiff0(pObj) );
-    int w;
-    if ( Gia_ObjFaninC0(pObj) )
-        for ( w = p->nWords-1; w >= 0; w-- )
-            pInfo[w] = ~pInfo0[w];
-    else 
-        for ( w = p->nWords-1; w >= 0; w-- )
-            pInfo[w] = pInfo0[w];
+    Gia_SimWords( pInfo, pInfo0, NULL, p->nWords, Gia_ObjFaninC0(pObj) ? 1 : 0 );
 }
 
 /**Function*************************************************************
@@ -395,25 +471,12 @@ static inline void Gia_ManSimulateNode( Gia_ManSim_t * p, Gia_Obj_t * pObj )
     unsigned * pInfo  = Gia_SimData( p, Gia_ObjValue(pObj) );
     unsigned * pInfo0 = Gia_SimData( p, Gia_ObjDiff0(pObj) );
     unsigned * pInfo1 = Gia_SimData( p, Gia_ObjDiff1(pObj) );
-    int w;
+    int op;
     if ( Gia_ObjFaninC0(pObj) )
-    {
-        if (  Gia_ObjFaninC1(pObj) )
-            for ( w = p->nWords-1; w >= 0; w-- )
-                pInfo[w] = ~(pInfo0[w] | pInfo1[w]);
-        else 
-            for ( w = p->nWords-1; w >= 0; w-- )
-                pInfo[w] = ~pInfo0[w] & pInfo1[w];
-    }
-    else 
-    {
-        if (  Gia_ObjFaninC1(pObj) )
-            for ( w = p->nWords-1; w >= 0; w-- )
-                pInfo[w] = pInfo0[w] & ~pInfo1[w];
-        else 
-            for ( w = p->nWords-1; w >= 0; w-- )
-                pInfo[w] = pInfo0[w] & pInfo1[w];
-    }
+        op = Gia_ObjFaninC1(pObj) ? 5 : 3;
+    else
+        op = Gia_ObjFaninC1(pObj) ? 4 : 2;
+    Gia_SimWords( pInfo, pInfo0, pInfo1, p->nWords, op );
 }
 
 /**Function*************************************************************
