@@ -194,6 +194,74 @@ void Dar_TruthPermute_int( int * pMints, int nMints, char * pPerm, int nVars, in
 
 /**Function*************************************************************
 
+  Synopsis    [Swaps two adjacent variables of a 4-input truth word.]
+
+  Description [Same masks as Extra_TruthSwapAdjacentVars2, kept in 16 bits.
+  Start is the lower variable (0, 1, or 2).]
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+static unsigned Dar_TruthSwapAdj4( unsigned uTruth, int Start )
+{
+    if ( Start == 0 )
+        return (uTruth & 0x9999u) | ((uTruth & 0x2222u) << 1) | ((uTruth & 0x4444u) >> 1);
+    if ( Start == 1 )
+        return (uTruth & 0xC3C3u) | ((uTruth & 0x0C0Cu) << 2) | ((uTruth & 0x3030u) >> 2);
+    return (uTruth & 0xF00Fu) | ((uTruth & 0x00F0u) << 4) | ((uTruth & 0x0F00u) >> 4);
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Permutes a 4-input truth table as one word.]
+
+  Description [pPerm[v] is the bit position variable v moves to, matching
+  Dar_TruthPermute with fReverse = 0. Adjacent swaps move each variable
+  into that position.]
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+static unsigned Dar_TruthPermute4( unsigned Truth, char * pPerm )
+{
+    unsigned uTruth;
+    int at[4];
+    int inv[4];
+    int dest, cur, var, tmp;
+
+    uTruth = Truth & 0xFFFFu;
+    at[0] = 0;
+    at[1] = 1;
+    at[2] = 2;
+    at[3] = 3;
+    inv[(int)pPerm[0]] = 0;
+    inv[(int)pPerm[1]] = 1;
+    inv[(int)pPerm[2]] = 2;
+    inv[(int)pPerm[3]] = 3;
+    for ( dest = 0; dest < 4; dest++ )
+    {
+        var = inv[dest];
+        cur = 0;
+        while ( at[cur] != var )
+            cur++;
+        while ( cur > dest )
+        {
+            uTruth = Dar_TruthSwapAdj4( uTruth, cur - 1 );
+            tmp = at[cur - 1];
+            at[cur - 1] = at[cur];
+            at[cur] = tmp;
+            cur--;
+        }
+    }
+    return uTruth;
+}
+
+/**Function*************************************************************
+
   Synopsis    [Permutes the function.]
 
   Description []
@@ -206,6 +274,10 @@ void Dar_TruthPermute_int( int * pMints, int nMints, char * pPerm, int nVars, in
 unsigned Dar_TruthPermute( unsigned Truth, char * pPerms, int nVars, int fReverse )
 {
     unsigned Result;
+    /* The NPN table calls this for every 4-input order. The word form
+       matches the minterm gather below when fReverse is 0. */
+    if ( nVars == 4 && !fReverse )
+        return Dar_TruthPermute4( Truth, pPerms );
     int stackMints[32];
     int stackMintsP[32];
     int * pMints;
