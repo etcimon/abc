@@ -206,15 +206,28 @@ void Dar_TruthPermute_int( int * pMints, int nMints, char * pPerm, int nVars, in
 unsigned Dar_TruthPermute( unsigned Truth, char * pPerms, int nVars, int fReverse )
 {
     unsigned Result;
+    int stackMints[32];
+    int stackMintsP[32];
     int * pMints;
     int * pMintsP;
     int nMints;
     int i, m;
+    int fStack;
 
     assert( nVars < 6 );
-    nMints  = (1 << nVars);
-    pMints  = ABC_ALLOC( int, nMints );
-    pMintsP = ABC_ALLOC( int, nMints );
+    nMints = (1 << nVars);
+    // Callers pass nVars = 4 (16 minterms). The assert allows up to 32.
+    fStack = (nVars < 6);
+    if ( fStack )
+    {
+        pMints = stackMints;
+        pMintsP = stackMintsP;
+    }
+    else
+    {
+        pMints  = ABC_ALLOC( int, nMints );
+        pMintsP = ABC_ALLOC( int, nMints );
+    }
     for ( i = 0; i < nMints; i++ )
         pMints[i] = i;
 
@@ -234,8 +247,11 @@ unsigned Dar_TruthPermute( unsigned Truth, char * pPerms, int nVars, int fRevers
                 Result |= (1 << pMintsP[m]);
     }
 
-    ABC_FREE( pMints );
-    ABC_FREE( pMintsP );
+    if ( !fStack )
+    {
+        ABC_FREE( pMints );
+        ABC_FREE( pMintsP );
+    }
 
     return Result;
 }
